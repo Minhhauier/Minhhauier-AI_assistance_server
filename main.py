@@ -1,7 +1,8 @@
 import os
 import time
 
-# Nếu dùng Windows, đoạn này cực kỳ quan trọng để "ép" Python thấy DLL
+#AI local using ollama
+
 cuda_bin_path = r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.6\bin"
 if os.path.exists(cuda_bin_path):
     os.add_dll_directory(cuda_bin_path)
@@ -18,7 +19,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 app = FastAPI()
 
-# ─── Ollama config ────────────────────────────────────────────────────────────
+
 OLLAMA_CHAT_URL = "http://localhost:11434/api/chat" # api/chat - xu ly hoi thoai #api/generate - tao van ban don thuan
 OLLAMA_MODEL    = "qwen2:1.5b"
 MAX_HISTORY_TURNS = 3   # nhớ tối đa 3 lượt hỏi-đáp gần nhất
@@ -29,7 +30,7 @@ SYSTEM_PROMPT = (
     "Không giải thích dài dòng."
 )
 
-# ─── Shared HTTP client ───────────────────────────────────────────────────────
+
 _http_client: httpx.AsyncClient | None = None
 
 async def get_http_client() -> httpx.AsyncClient:
@@ -38,8 +39,7 @@ async def get_http_client() -> httpx.AsyncClient:
         _http_client = httpx.AsyncClient(timeout=60)
     return _http_client
 
-# ─── Ollama chat (có context) ─────────────────────────────────────────────────
-#Note: async (bất đồng bộ) nếu đang chờ thì có thể đi làm việc khác luôn đi với await(chờ kết quả)
+
 async def ask_ollama(prompt: str, history: list[dict]) -> str:
     print(f"[LLM] Querying: {prompt!r}")
     history.append({"role": "user", "content": prompt})
@@ -69,13 +69,13 @@ async def ask_ollama(prompt: str, history: list[dict]) -> str:
     print(f"[LLM] Reply: {first_sentence!r} | history={len(history)//2} turns")
     return first_sentence
 
-# ─── Whisper model ────────────────────────────────────────────────────────────
+
 model_path = "./models/whisper-medium-ct2"
 print("Loading faster-whisper model...")
 model = WhisperModel(
     model_path,
     device="cuda",
-    compute_type="float16",   # float16 — nhanh ~2-3x so với float32 trên GPU
+    compute_type="float16",
     num_workers=1,
     cpu_threads=0,
     download_root=None,
@@ -87,7 +87,7 @@ _executor = ThreadPoolExecutor(max_workers=1)
 # Ngưỡng rolling: 2 giây audio
 ROLLING_THRESHOLD_BYTES = 2 * 16_000 * 2
 
-# ─── Transcribe helper ────────────────────────────────────────────────────────
+
 def _transcribe_sync(raw_bytes: bytes) -> str:
     audio_np = np.frombuffer(raw_bytes, dtype=np.int16).astype(np.float32) / 32768.0
 
@@ -114,7 +114,7 @@ async def transcribe_audio(raw_bytes: bytes) -> str: #Asyncio: "Bridging Sync an
     loop = asyncio.get_event_loop()
     return await loop.run_in_executor(_executor, _transcribe_sync, raw_bytes)
 
-# ─── WebSocket endpoint ───────────────────────────────────────────────────────
+
 @app.websocket("/ws/transcribe")
 async def ws_transcribe(websocket: WebSocket):
     await websocket.accept()
@@ -151,7 +151,7 @@ async def ws_transcribe(websocket: WebSocket):
         while True:
             message = await websocket.receive()
 
-            # ── Binary frame: tích lũy chunk audio ──────────────────────────
+
             if "bytes" in message and message["bytes"]:
                 chunk: bytes = message["bytes"]
                 audio_chunks.append(chunk)
@@ -165,7 +165,7 @@ async def ws_transcribe(websocket: WebSocket):
                     pending_tasks.add(task)
                     task.add_done_callback(pending_tasks.discard)
 
-            # ── Text frame: sentinel "END" ───────────────────────────────────
+
             elif "text" in message:
                 text = message["text"].strip()
 
@@ -199,7 +199,6 @@ async def ws_transcribe(websocket: WebSocket):
         for t in pending_tasks:
             t.cancel()
 
-# ─── HTTP endpoints ───────────────────────────────────────────────────────────
 @app.post("/transcribe")
 async def transcribe_http():
     return {"detail": "Not implemented"}
@@ -208,7 +207,6 @@ async def transcribe_http():
 async def ping():
     return {"status": "ok"}
 
-# ─── Entry point ──────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
