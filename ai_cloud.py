@@ -3,14 +3,21 @@ import asyncio
 import json
 import io
 import wave
+import unicodedata
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from google import genai
 from google.genai import types
+import mqtt
 
 import parameter_secret
 
 app = FastAPI()
+
+
+def _normalize_text(text: str) -> str:
+    # Normalize unicode + lowercase to avoid misses like "Bật quạt" vs "bật quạt".
+    return unicodedata.normalize("NFKC", text).lower()
 
 # ─── Gemini Config ──────────────────────────────────────────────────────────
 GEMINI_API_KEY = parameter_secret.API_KEY
@@ -18,10 +25,10 @@ client = genai.Client(api_key=GEMINI_API_KEY, http_options={'api_version': 'v1be
 
 MODEL_ID = "gemini-2.5-flash"
 SYSTEM_PROMPT = (
-    "Bạn là trợ lý AI thông minh tên là tiểu trí chạy trên thiết bị ESP32. "
+    "Bạn là trợ lý AI thông minh tên là tiểu trí, có thể gọi người dùng là đại trí "
     "Nhiệm vụ: Trò chuyện tự nhiên, trả lời mọi câu hỏi của người dùng. "
     "Quy tắc: Trả lời cực ngắn dưới 20 từ, không dùng Markdown, không lặp từ. "
-    "trả "
+    "Người dùng yêu cầu bật đèn thì hãy trả lời sao cho bao gồm cả cụm từ bật đèn. Tương tự thế đối với các thiết bị điện khác. Không hỏi thêm. "
     "Hãy sử dụng thông tin từ các câu hỏi trước đó trong lịch sử hội thoại để hiểu ngữ cảnh."
 )
 
@@ -69,13 +76,31 @@ async def ask_gemini_with_audio(audio_bytes: bytes, history: list) -> str:
                 history.pop(0)
 
             print(f"[Gemini] Reply: {reply}")
+            normalized_reply = _normalize_text(reply)
+            has_command = False
+
+            if "tắt đèn" in normalized_reply:
+                mqtt.publish_control(104, 2, 0)
+                has_command = True
+            if "bật đèn" in normalized_reply:
+                mqtt.publish_control(104, 2, 1)
+                has_command = True
+            if "bật quạt" in normalized_reply:
+                mqtt.publish_control(104, 1, 1)
+                has_command = True
+            if "tắt quạt" in normalized_reply:
+                mqtt.publish_control(104, 1, 0)
+                has_command = True
+
+            if not has_command:
+                print(f"[MQTT] Không tìm thấy lệnh điều khiển trong reply: {normalized_reply}")
             return reply
 
         return "Tôi chưa hiểu ý bạn."
 
     except Exception as e:
         print(f"[ERR Gemini] {e}")
-        return "Sự cố kết nối AI."
+        return "Tôi không phản hồi được, kiểm tra mạng của bạn."
 
 
 @app.websocket("/ws/transcribe")
@@ -93,9 +118,11 @@ async def ws_transcribe(websocket: WebSocket):
 
             if "bytes" in message and message["bytes"]:
                 audio_chunks.append(message["bytes"])
+                # print(f"[WS] Nhận âm thanh: {len(message['bytes'])} bytes, tổng: {sum(len(chunk) for chunk in audio_chunks)} bytes")
 
             elif "text" in message:
                 if message["text"].strip() == "END":
+                    print("[WS] Nhận lệnh kết thúc phiên âm.")
                     if not audio_chunks:
                         continue
 
